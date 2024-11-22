@@ -1,0 +1,154 @@
+substitutions:
+  device_name: "garage-door-opener"
+  friendly_name: "Garage Door Opener"
+  device_id: !secret device_identification
+  device_auth: !secret device_auth_pw
+  nas_ip: !secret nas_ip_address
+  nas_port: !secret nas_log_server_port
+  open_duration: "5" # Duration in minutes
+  auto_close_enabled: "true"
+  vac_mode_pin: !secret vacation_mode_pin
+
+esphome:
+  name: "${device_name}"
+  friendly_name: "${friendly_name}"
+  platform: ESP8266
+  board: nodemcuv2
+
+  on_boot:
+    priority: -10
+    then:
+      - wifi.enable:
+      - logger.log:
+          format: "Device ${device_name} (ID: ${device_id}) booted successfully!"
+      - lambda: |-
+          id(custom_logger).log_message("Info",  "Active", "${friendly_name} is initialized");
+
+logger:
+  level: INFO
+
+external_components:
+  - source: components
+
+dr_logger:
+  id: custom_logger
+  server_url: "http://${nas_ip}:${nas_port}"
+  device_auth: "${device_auth}"
+  device_id: "${device_id}"
+  device_location: "Garage"
+
+garage_door:
+  id: garage_door_1
+  relay_pin: D1 # GPIO5
+  open_sensor_pin: "D5" # GPIO14
+  close_sensor_pin: D6 # GPIO12
+
+http_request:
+  useragent: esphome/1.0
+  verify_ssl: false
+  id: http_client
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Home Fallback Hotspot"
+    password: !secret ap_password
+
+globals:
+  - id: vacation_mode_active
+    type: bool
+    initial_value: "false"
+
+text_sensor:
+  - platform: homeassistant
+    id: pin_entry
+    entity_id: input_text.garage_vacation_pin
+
+# Switches for door control and vacation mode
+switch:
+  - platform: template
+    name: "${friendly_name} Open"
+    id: switch_open
+    turn_on_action:
+      - if:
+          condition:
+            lambda: "return !id(vacation_mode_active);"
+          then:
+            - lambda: |-
+                id(garage_door_1)->open_door();
+                id(custom_logger).log_message("Info",  "Open", "${friendly_name} is opening");
+
+  - platform: template
+    name: "${friendly_name} Close"
+    id: switch_close
+    turn_on_action:
+      - if:
+          condition:
+            lambda: "return !id(vacation_mode_active);"
+          then:
+            - lambda: |-
+                id(garage_door_1)->close_door();
+                id(custom_logger).log_message("Info",  "Close", "${friendly_name} is closing");
+
+  - platform: template
+    name: "${friendly_name} Vacation Mode"
+    id: vacation_mode_switch
+    lambda: "return id(vacation_mode_active);"
+    turn_on_action:
+      - lambda: |-
+          if (id(pin_entry).state == "${vac_mode_pin}") { 
+            id(vacation_mode_active) = true;
+            id(custom_logger).log_message("Info",  "Active", "Vacation was mode enabled.");
+          } else {
+            id(custom_logger).log_message("Warning",  "Active", "Invalid PIN entered.");
+            ESP_LOGW("vacation_mode", "Invalid PIN entered.");
+          }
+    turn_off_action:
+      - lambda: |-
+          id(vacation_mode_active) = false;
+          id(custom_logger).log_message("Info",  "Active", "Vacation mode disabled.");
+
+# Visuals for open and close sensors
+# binary_sensor:
+#   - platform: gpio
+#     name: "${friendly_name} Open Sensor"
+#     pin: "id(garage_door_1)->"
+#     id: open_sensor
+#     device_class: garage_door
+
+#   - platform: gpio
+#     name: "${friendly_name} Close Sensor"
+#     pin: D6
+#     id: close_sensor
+#     device_class: garage_door
+
+# Periodic logging of door state
+interval:
+  - interval: 15s
+    then:
+      - lambda: |-
+          if (id(vacation_mode_active)) {
+            id(custom_logger).log_message("Info", "Mode", "Vacation mode active.");
+          } else {
+            id(custom_logger).log_message("Info", "Mode", "Vacation mode inactive.");
+          }
+
+          // Log open/close sensor status
+          bool is_open = id(garage_door_1)->is_door_open();
+          bool is_closed = id(garage_door_1)->is_door_closed();
+          if (is_open) {
+            id(custom_logger).log_message("Info", "State", "Garage door is open.");
+          } else if (is_closed) {
+            id(custom_logger).log_message("Info", "State", "Garage door is closed.");
+          } else {
+            id(custom_logger).log_message("Warning", "State", "Garage door is in an unknown state.");
+          }
