@@ -48,6 +48,7 @@ http_request:
   verify_ssl: false
   id: http_client
 
+# Enable Home Assistant API
 api:
   encryption:
     key: !secret api_encryption_key
@@ -60,8 +61,8 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-    ssid: "Home Fallback Hotspot"
-    password: !secret ap_password
+    ssid: "Garage-Door Fallback Hotspot"
+    password: !secret hotspot_wifi_password
 
 globals:
   - id: vacation_mode_active
