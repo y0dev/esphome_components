@@ -1,19 +1,35 @@
+# Substitutions: Define variables for reuse and secure configuration
 substitutions:
-  device_name: "garage-door-opener"
-  friendly_name: "Garage Door Opener"
-  device_id: !secret device_identification
-  device_auth: !secret device_auth_pw
-  nas_ip: !secret nas_ip_address
-  nas_port: !secret nas_log_server_port
-  open_duration: "5" # Duration in minutes
-  auto_close_enabled: "true"
-  vac_mode_pin: !secret vacation_mode_pin
+  device_name: "garage-door-opener" # Unique device identifier
+  friendly_name: "Garage Door Opener" # Display name in Home Assistant
+  device_id: !secret device_identification # Secure device ID
+  device_auth: !secret device_auth_pw # Secure authentication password
+  nas_ip: !secret nas_ip_address # NAS server IP for logging
+  nas_port: !secret nas_log_server_port # NAS log server port
+  open_duration: "5" # Duration (minutes) before auto-closing
+  auto_close_enabled: "true" # Enable or disable auto-closing
 
+globals:
+  - id: last_log_time
+    type: int
+    initial_value: "0"
+
+# External component source
+external_components:
+  - source: components # Custom components directory
+
+# Custom Logger Configuration
+dr_logger:
+  id: custom_logger
+  server_url: "http://${nas_ip}:${nas_port}" # NAS logging endpoint
+  device_auth: "${device_auth}" # Authentication for secure logging
+  device_id: "${device_id}" # Device identification in logs
+  device_location: "Garage" # Physical location (for log context)
+
+# Core ESPHome configuration
 esphome:
-  name: "${device_name}"
-  friendly_name: "${friendly_name}"
-  platform: ESP8266
-  board: nodemcuv2
+  name: "${device_name}" # Device name
+  friendly_name: "${friendly_name}" # User-friendly name
 
   on_boot:
     priority: -10
@@ -24,132 +40,224 @@ esphome:
       - lambda: |-
           id(custom_logger).log_message("Info",  "Active", "${friendly_name} is initialized");
 
+# Define the ESP8266 board type
+esp8266:
+  board: nodemcuv2 # NodeMCU v2 (ESP8266-based)
+
+# Enable logging at the INFO level
 logger:
   level: INFO
 
-external_components:
-  - source: components
-
-dr_logger:
-  id: custom_logger
-  server_url: "http://${nas_ip}:${nas_port}"
-  device_auth: "${device_auth}"
-  device_id: "${device_id}"
-  device_location: "Garage"
-
-garage_door:
-  id: garage_door_1
-  relay_pin: D1 # GPIO5
-  open_sensor_pin: "D5" # GPIO14
-  close_sensor_pin: D6 # GPIO12
-
+# HTTP request client (for logging or external services)
 http_request:
   useragent: esphome/1.0
-  verify_ssl: false
+  verify_ssl: false # Disable SSL verification for local servers
   id: http_client
 
-# Enable Home Assistant API
+web_server:
+  port: 80
+  version: 2
+  local: true
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+# Home Assistant API configuration with encryption
 api:
   encryption:
     key: !secret api_encryption_key
 
+# Over-The-Air (OTA) update configuration
 ota:
   - platform: esphome
     password: !secret ota_password
 
+# WiFi configuration with fallback hotspot
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
+  ssid: !secret wifi_ssid # WiFi SSID
+  password: !secret wifi_password # WiFi password
+  ap: # Fallback access point
     ssid: "Garage-Door Fallback Hotspot"
     password: !secret hotspot_wifi_password
 
-globals:
-  - id: vacation_mode_active
-    type: bool
-    initial_value: "false"
+# Captive portal for WiFi setup fallback
+captive_portal:
 
-text_sensor:
-  - platform: homeassistant
-    id: pin_entry
-    entity_id: input_text.garage_vacation_pin
-
-# Switches for door control and vacation mode
+# Virtual and physical switches
 switch:
   - platform: template
-    name: "${friendly_name} Open"
-    id: switch_open
-    turn_on_action:
-      - if:
-          condition:
-            lambda: "return !id(vacation_mode_active);"
-          then:
-            - lambda: |-
-                id(garage_door_1)->open_door();
-                id(custom_logger).log_message("Info",  "Open", "${friendly_name} is opening");
+    name: "Virtual Lock" # Prevents unintended door operations
+    id: virtual_lock
+    optimistic: true # Assumes state without confirmation
+    on_turn_on:
+      - lambda: |-
+          id(custom_logger).log_message("Info", "Virtual Lock", "${friendly_name}: Virtual Lock activated (ON)");
+          id(last_log_time) = id(homeassistant_time).now().timestamp;
+    on_turn_off:
+      - lambda: |-
+          id(custom_logger).log_message("Info", "Virtual Lock", "${friendly_name}: Virtual Lock deactivated (OFF)");
+          id(last_log_time) = id(homeassistant_time).now().timestamp;
+
+  - platform: gpio
+    pin: D5 # Connected to door relay
+    name: "Door Relay"
+    id: door_relay
+    internal: true # Hidden from Home Assistant
+    on_turn_on:
+      - delay: 250ms # Pulse relay for 250 ms
+      - switch.turn_off: door_relay # Automatically turn off
+
+# Binary sensors for door state
+binary_sensor:
+  - platform: template
+    name: "Garage Door Is Jammed"
+    id: is_jammed
+    device_class: problem # Home Assistant alert category
 
   - platform: template
-    name: "${friendly_name} Close"
-    id: switch_close
-    turn_on_action:
+    name: "Garage Door Is Open"
+    id: is_open
+    device_class: garage_door # Specific device class for garage door status
+
+  # Close position sensor
+  - platform: gpio
+    pin:
+      number: D1 # GPIO pin for close sensor
+      inverted: true
+      mode: # Set pin mode for correct input handling
+        input: true
+        pullup: true
+    name: "Garage Door Close Sensor"
+    id: close_endstop_binary_sensor
+    internal: true
+    on_press:
+      - cover.template.publish:
+          id: garage_door
+          state: CLOSED # Update cover status to closed
+          current_operation: IDLE
+      - binary_sensor.template.publish:
+          id: is_jammed
+          state: OFF # Reset jammed status
+      - binary_sensor.template.publish:
+          id: is_open
+          state: OFF # Mark as closed
+    on_release:
+      - cover.template.publish:
+          id: garage_door
+          current_operation: OPENING
+      - binary_sensor.template.publish:
+          id: is_open
+          state: ON # Mark as open
+      - delay: 25s
+      - if: # Check if the door is stuck during opening
+          condition:
+            binary_sensor.is_off: open_endstop_binary_sensor
+          then:
+            - binary_sensor.template.publish:
+                id: is_jammed
+                state: ON # Mark as jammed if not fully open
+
+  # Open position sensor
+  - platform: gpio
+    pin:
+      number: D2
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    name: "Garage Door Open Sensor"
+    id: open_endstop_binary_sensor
+    internal: true
+    on_press:
+      - cover.template.publish:
+          id: garage_door
+          state: OPEN
+          current_operation: IDLE
+      - binary_sensor.template.publish:
+          id: is_jammed
+          state: OFF # Clear jammed status
+
+# WiFi signal strength sensor
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal" # Monitor WiFi signal strength
+    update_interval: 60s # Refresh rate
+  - platform: homeassistant
+    id: open_duration_sensor
+    entity_id: input_number.garage_open_duration
+
+# Cover entity representing the garage door
+cover:
+  - platform: template
+    id: garage_door
+    name: "Garage Door"
+    device_class: garage # Specific cover type
+
+    # Open action logic
+    open_action:
       - if:
           condition:
-            lambda: "return !id(vacation_mode_active);"
+            - and:
+                - switch.is_off: virtual_lock # Ensure virtual lock is off
+                - binary_sensor.is_on: close_endstop_binary_sensor # Ensure door is currently closed
           then:
+            - switch.turn_on: door_relay # Trigger door relay
             - lambda: |-
-                id(garage_door_1)->close_door();
-                id(custom_logger).log_message("Info",  "Close", "${friendly_name} is closing");
+                id(custom_logger).log_message("Info", "Open", "${friendly_name} is opening");
+                id(last_log_time) = id(homeassistant_time).now().timestamp;
 
-  - platform: template
-    name: "${friendly_name} Vacation Mode"
-    id: vacation_mode_switch
-    lambda: "return id(vacation_mode_active);"
-    turn_on_action:
-      - lambda: |-
-          if (id(pin_entry).state == "${vac_mode_pin}") { 
-            id(vacation_mode_active) = true;
-            id(custom_logger).log_message("Info",  "Active", "Vacation was mode enabled.");
-          } else {
-            id(custom_logger).log_message("Warning",  "Active", "Invalid PIN entered.");
-            ESP_LOGW("vacation_mode", "Invalid PIN entered.");
-          }
-    turn_off_action:
-      - lambda: |-
-          id(vacation_mode_active) = false;
-          id(custom_logger).log_message("Info",  "Active", "Vacation mode disabled.");
+    # Close action logic
+    close_action:
+      - if:
+          condition:
+            - and:
+                - switch.is_off: virtual_lock # Ensure virtual lock is off
+                - binary_sensor.is_on: open_endstop_binary_sensor # Ensure door is currently open
+          then:
+            - switch.turn_on: door_relay # Trigger door relay
+            - lambda: |-
+                id(custom_logger).log_message("Info", "Close", "${friendly_name} is closing");
+                id(last_log_time) = id(homeassistant_time).now().timestamp;
 
-# Visuals for open and close sensors
-# binary_sensor:
-#   - platform: gpio
-#     name: "${friendly_name} Open Sensor"
-#     pin: "id(garage_door_1)->"
-#     id: open_sensor
-#     device_class: garage_door
+    # Stop action logic (emergency stop)
+    stop_action:
+      - if:
+          condition:
+            - and:
+                - switch.is_off: virtual_lock # Ensure virtual lock is off
+                - binary_sensor.is_off: close_endstop_binary_sensor # Ensure door isn't closed
+                - binary_sensor.is_off: open_endstop_binary_sensor # Ensure door isn't open
+          then:
+            - switch.turn_on: door_relay # Trigger relay to stop movement
+            - lambda: |-
+                id(custom_logger).log_message("Info", "Stop", "${friendly_name} has been stopped");
+                id(last_log_time) = id(homeassistant_time).now().timestamp;
 
-#   - platform: gpio
-#     name: "${friendly_name} Close Sensor"
-#     pin: D6
-#     id: close_sensor
-#     device_class: garage_door
-
-# Periodic logging of door state
 interval:
-  - interval: 15s
+  - interval: 1min  # Check every minute if the door has been open
     then:
-      - lambda: |-
-          if (id(vacation_mode_active)) {
-            id(custom_logger).log_message("Info", "Mode", "Vacation mode active.");
-          } else {
-            id(custom_logger).log_message("Info", "Mode", "Vacation mode inactive.");
-          }
-
-          // Log open/close sensor status
-          bool is_open = id(garage_door_1)->is_door_open();
-          bool is_closed = id(garage_door_1)->is_door_closed();
-          if (is_open) {
-            id(custom_logger).log_message("Info", "State", "Garage door is open.");
-          } else if (is_closed) {
-            id(custom_logger).log_message("Info", "State", "Garage door is closed.");
-          } else {
-            id(custom_logger).log_message("Warning", "State", "Garage door is in an unknown state.");
-          }
+      - if:
+          condition:
+            - binary_sensor.is_on: is_open  # Garage door is open
+            - lambda: |-
+                static int open_time_counter = 0;  // Persistent counter
+                open_time_counter++;  // Increment each minute
+                // float open_duration = id(open_duration_sensor).has_state() ? id(open_duration_sensor).state : 5.0;  
+                float open_duration = id(open_duration_sensor).state;  // Get duration from Home Assistant
+                return open_time_counter >= open_duration;
+          then:
+            - lambda: |-
+                id(custom_logger).log_message("Warning", "Open", "${friendly_name} has been open for more than " + std::to_string(id(open_duration_sensor).state) + " minutes");
+            - homeassistant.event:  # Send notification to Home Assistant
+                event: esphome.garage_open_warning
+                data:
+                  title: "Garage Door Alert"
+                  message: "${friendly_name} has been open for more than " + std::to_string(id(open_duration_sensor).state) + " minutes"
+      - if:  # Reset counter if door is closed
+          condition:
+            - binary_sensor.is_off: is_open
+          then:
+            - lambda: |-
+                static int open_time_counter = 0;  // Reset counter
+                open_time_counter = 0;
