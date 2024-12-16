@@ -13,10 +13,14 @@ globals:
   - id: last_log_time
     type: int
     initial_value: "0"
+  - id: open_time_counter
+    type: int
+    initial_value: "0"
 
 # External component source
 external_components:
   - source: components # Custom components directory
+    components: [dr_logger]
 
 # Custom Logger Configuration
 dr_logger:
@@ -30,6 +34,8 @@ dr_logger:
 esphome:
   name: "${device_name}" # Device name
   friendly_name: "${friendly_name}" # User-friendly name
+  platform: ESP8266
+  board: nodemcuv2 # NodeMCU v2 (ESP8266-based)
 
   on_boot:
     priority: -10
@@ -39,10 +45,6 @@ esphome:
           format: "Device ${device_name} (ID: ${device_id}) booted successfully!"
       - lambda: |-
           id(custom_logger).log_message("Info",  "Active", "${friendly_name} is initialized");
-
-# Define the ESP8266 board type
-esp8266:
-  board: nodemcuv2 # NodeMCU v2 (ESP8266-based)
 
 # Enable logging at the INFO level
 logger:
@@ -235,29 +237,21 @@ cover:
                 id(last_log_time) = id(homeassistant_time).now().timestamp;
 
 interval:
-  - interval: 1min  # Check every minute if the door has been open
+  - interval: 1min
     then:
       - if:
           condition:
-            - binary_sensor.is_on: is_open  # Garage door is open
-            - lambda: |-
-                static int open_time_counter = 0;  // Persistent counter
-                open_time_counter++;  // Increment each minute
-                // float open_duration = id(open_duration_sensor).has_state() ? id(open_duration_sensor).state : 5.0;  
-                float open_duration = id(open_duration_sensor).state;  // Get duration from Home Assistant
-                return open_time_counter >= open_duration;
+            binary_sensor.is_on: is_open # Garage door is open
           then:
             - lambda: |-
-                id(custom_logger).log_message("Warning", "Open", "${friendly_name} has been open for more than " + std::to_string(id(open_duration_sensor).state) + " minutes");
-            - homeassistant.event:  # Send notification to Home Assistant
-                event: esphome.garage_open_warning
-                data:
-                  title: "Garage Door Alert"
-                  message: "${friendly_name} has been open for more than " + std::to_string(id(open_duration_sensor).state) + " minutes"
-      - if:  # Reset counter if door is closed
+                id(open_time_counter)++;  // Increment the counter
+                if (id(open_time_counter) >= atoi("${open_duration}")) {
+                  id(custom_logger).log_message("Warning", "Open", "${friendly_name} has been open for more than ${open_duration} minutes");
+                }
+      - if:
           condition:
-            - binary_sensor.is_off: is_open
+            binary_sensor.is_off: is_open # Garage door is closed
           then:
             - lambda: |-
-                static int open_time_counter = 0;  // Reset counter
-                open_time_counter = 0;
+                id(open_time_counter) = 0;  // Reset the counter
+                id(custom_logger).log_message("Info", "Reset", "Open time counter reset because the door is closed");
