@@ -253,5 +253,7 @@ interval:
             binary_sensor.is_off: is_open # Garage door is closed
           then:
             - lambda: |-
-                id(open_time_counter) = 0;  // Reset the counter
-                id(custom_logger).log_message("Info", "Reset", "Open time counter reset because the door is closed");
+                if (id(open_time_counter) != 0) {
+                  id(open_time_counter) = 0;  // Reset the counter
+                  id(custom_logger).log_message("Info", "Reset", "Open time counter reset because the door is closed");
+                }
