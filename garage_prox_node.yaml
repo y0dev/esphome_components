@@ -2,12 +2,6 @@
 substitutions:
   device_name: "uart-proximity-sensor"
   friendly_name: "UART Proximity Sensor"
-  device_id: !secret proximity_device_id
-  device_auth: !secret proximity_device_auth
-  garage_opener_ip: !secret garage_opener_ip
-  garage_opener_port: !secret garage_opener_port
-  nas_ip: !secret nas_ip_address
-  nas_port: !secret nas_log_server_port
 
 globals:
   - id: distance_reading
@@ -26,16 +20,10 @@ esphome:
     then:
       - logger.log:
           format: "Device ${device_name} booted and initialized."
-      - lambda: |-
-          id(custom_logger).log_message("Info", "Active", "${friendly_name} initialized.");
 
 # Logger configuration
 logger:
   level: INFO
-
-# HTTP request client for integration with garage door opener
-http_request:
-  id: http_client
 
 wifi:
   ssid: !secret wifi_ssid
@@ -68,13 +56,13 @@ sensor:
         - lambda: |-
             float distance = atof(x.c_str()); // Parse received distance
             id(distance_reading) = distance;
+
             if (distance < 20.0) {
-              id(http_client).post("${garage_opener_ip}:${garage_opener_port}/api/proximity", "{\"proximity\": \"CLOSE\"}");
+              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is CLOSE", distance);
             } else if (distance < 50.0) {
-              id(http_client).post("${garage_opener_ip}:${garage_opener_port}/api/proximity", "{\"proximity\": \"NEAR\"}");
+              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is NEAR", distance);
             } else {
-              id(http_client).post("${garage_opener_ip}:${garage_opener_port}/api/proximity", "{\"proximity\": \"FAR\"}");
-            }
+              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is FAR", distance);
 
 binary_sensor:
   - platform: status
@@ -85,15 +73,3 @@ binary_sensor:
     name: "Object Detected"
     lambda: |-
       return id(distance_reading) < 50.0;
-
-light:
-  - platform: monochromatic
-    name: "Proximity LED Indicator"
-    id: proximity_led
-    output: led_output
-
-output:
-  - platform: esp8266_pwm
-    id: led_output
-    pin: GPIO4
-    frequency: 1000 Hz
