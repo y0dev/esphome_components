@@ -44,7 +44,7 @@ esphome:
       - logger.log:
           format: "Device ${device_name} (ID: ${device_id}) booted successfully!"
       - lambda: |-
-          id(custom_logger).log_message("Info",  "Active", "${friendly_name} is initialized");
+          id(custom_logger).log_message("Info",  "Online", "${friendly_name} is initialized");
 
 # Enable logging at the INFO level
 logger:
@@ -94,11 +94,11 @@ switch:
     optimistic: true # Assumes state without confirmation
     on_turn_on:
       - lambda: |-
-          id(custom_logger).log_message("Info", "Virtual Lock", "${friendly_name}: Virtual Lock activated (ON)");
+          id(custom_logger).log_message("Info", "Active", "${friendly_name}: Virtual Lock activated (ON)");
           id(last_log_time) = id(homeassistant_time).now().timestamp;
     on_turn_off:
       - lambda: |-
-          id(custom_logger).log_message("Info", "Virtual Lock", "${friendly_name}: Virtual Lock deactivated (OFF)");
+          id(custom_logger).log_message("Info", "Active", "${friendly_name}: Virtual Lock deactivated (OFF)");
           id(last_log_time) = id(homeassistant_time).now().timestamp;
 
   - platform: gpio
@@ -206,7 +206,7 @@ cover:
           then:
             - switch.turn_on: door_relay # Trigger door relay
             - lambda: |-
-                id(custom_logger).log_message("Info", "Open", "${friendly_name} is opening");
+                id(custom_logger).log_message("Info", "Active", "${friendly_name} is opening");
                 id(last_log_time) = id(homeassistant_time).now().timestamp;
 
     # Close action logic
@@ -219,7 +219,7 @@ cover:
           then:
             - switch.turn_on: door_relay # Trigger door relay
             - lambda: |-
-                id(custom_logger).log_message("Info", "Close", "${friendly_name} is closing");
+                id(custom_logger).log_message("Info", "Active", "${friendly_name} is closing");
                 id(last_log_time) = id(homeassistant_time).now().timestamp;
 
     # Stop action logic (emergency stop)
@@ -233,7 +233,7 @@ cover:
           then:
             - switch.turn_on: door_relay # Trigger relay to stop movement
             - lambda: |-
-                id(custom_logger).log_message("Info", "Stop", "${friendly_name} has been stopped");
+                id(custom_logger).log_message("Info", "Active", "${friendly_name} has been stopped");
                 id(last_log_time) = id(homeassistant_time).now().timestamp;
 
 interval:
@@ -246,7 +246,7 @@ interval:
             - lambda: |-
                 id(open_time_counter)++;  // Increment the counter
                 if (id(open_time_counter) >= atoi("${open_duration}")) {
-                  id(custom_logger).log_message("Warning", "Open", "${friendly_name} has been open for more than ${open_duration} minutes");
+                  id(custom_logger).log_message("Warning", "Inactive", "${friendly_name} has been open for more than ${open_duration} minutes");
                 }
       - if:
           condition:
@@ -255,5 +255,5 @@ interval:
             - lambda: |-
                 if (id(open_time_counter) != 0) {
                   id(open_time_counter) = 0;  // Reset the counter
-                  id(custom_logger).log_message("Info", "Reset", "Open time counter reset because the door is closed");
+                  id(custom_logger).log_message("Info", "Inactive", "Open time counter reset because the door is closed");
                 }
