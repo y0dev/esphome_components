@@ -1,75 +1,117 @@
-# Substitutions for variables
+# Substitutions: Define variables for reuse and secure configuration
 substitutions:
-  device_name: "uart-proximity-sensor"
-  friendly_name: "UART Proximity Sensor"
+  device_name: "garage-proxy-agent" # Unique device identifier
+  friendly_name: "Garage Door Distance Alert" # Display name in Home Assistant
+  device_id: !secret device_identification # Secure device ID
+  device_auth: !secret device_auth_pw # Secure authentication password
+  nas_ip: !secret nas_ip_address # NAS server IP for logging
+  nas_port: !secret nas_log_server_port # NAS log server port
 
 globals:
-  - id: distance_reading
-    type: float
-    initial_value: "0.0"
+  - id: last_log_time
+    type: int
+    initial_value: "0"
+
+# External component source
+external_components:
+  - source: components # Custom components directory
+    components: [dr_logger]
+
+# Custom Logger Configuration
+dr_logger:
+  id: custom_logger
+  server_url: "http://${nas_ip}:${nas_port}" # NAS logging endpoint
+  device_auth: "${device_auth}" # Authentication for secure logging
+  device_id: "${device_id}" # Device identification in logs
+  device_location: "Garage" # Physical location (for log context)
 
 # Core ESPHome configuration
 esphome:
-  name: "${device_name}"
-  friendly_name: "${friendly_name}"
+  name: "${device_name}" # Device name
+  friendly_name: "${friendly_name}" # User-friendly name
   platform: ESP8266
-  board: nodemcuv2
+  board: nodemcuv2 # NodeMCU v2 (ESP8266-based)
 
   on_boot:
     priority: -10
     then:
+      - wifi.enable
       - logger.log:
-          format: "Device ${device_name} booted and initialized."
+          format: "Device ${device_name} (ID: ${device_id}) booted successfully!"
+      - lambda: |-
+          id(custom_logger).log_message("Info",  "Active", "${friendly_name} is initialized");
 
-# Logger configuration
+# Enable logging at the INFO level
 logger:
   level: INFO
 
-wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
-  ap:
-    ssid: "UART-Proximity Fallback"
-    password: !secret hotspot_wifi_password
+# HTTP request client (for logging or external services)
+http_request:
+  useragent: esphome/1.0
+  verify_ssl: false # Disable SSL verification for local servers
+  id: http_client
 
+web_server:
+  port: 80
+  version: 2
+  local: true
+
+time:
+  - platform: homeassistant
+    id: homeassistant_time
+
+# Home Assistant API configuration with encryption
 api:
   encryption:
     key: !secret api_encryption_key
 
+# Over-The-Air (OTA) update configuration
 ota:
-  password: !secret ota_password
+  - platform: esphome
+    password: !secret ota_password
 
-# UART configuration
-uart:
-  tx_pin: GPIO1 # TX pin (ESP8266 default TX is GPIO1)
-  rx_pin: GPIO3 # RX pin (ESP8266 default RX is GPIO3)
-  baud_rate: 9600 # Match the sensor's baud rate
+# WiFi configuration with fallback hotspot
+wifi:
+  ssid: !secret wifi_ssid # WiFi SSID
+  password: !secret wifi_password # WiFi password
+  ap: # Fallback access point
+    ssid: "Garage-Dist Fallback Hotspot"
+    password: !secret hotspot_wifi_password
 
-# UART Sensor
+# Captive portal for WiFi setup fallback
+captive_portal:
+
+# Proximity sensor configuration
 sensor:
-  - platform: uart
-    name: "Proximity Sensor Distance"
-    id: uart_distance
-    update_interval: 500ms
-    on_value:
-      then:
-        - lambda: |-
-            float distance = atof(x.c_str()); // Parse received distance
-            id(distance_reading) = distance;
+  - platform: ultrasonic
+    trigger_pin: D1
+    echo_pin: D2
+    id: proximity_sensor
+    name: "${friendly_name} Proximity Sensor"
+    update_interval: 2s
+    timeout: 4m
+    filters:
+      - lambda: |-
+          ESP_LOGI("Proximity Sensor", "Distance: %.2f cm", x); // Log distance to console
+          if (x < 10) {
+            id(custom_logger).log_message("Info", "Garage", "Door is open.");
+            return x;
+          } else {
+            id(custom_logger).log_message("Info", "Garage", "Door is closed.");
+            return x;
+          }
+    on_value_range:
+      - below: 10
+        then:
+          - logger.log: "Garage door detected as open!"
+      - above: 10
+        then:
+          - logger.log: "Garage door detected as closed!"
 
-            if (distance < 20.0) {
-              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is CLOSE", distance);
-            } else if (distance < 50.0) {
-              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is NEAR", distance);
-            } else {
-              ESP_LOGI("Proximity Sensor", "Distance: %.2f cm - Object is FAR", distance);
-
+# Binary sensor to monitor door state
 binary_sensor:
-  - platform: status
-    name: "Proximity Sensor Status"
-    device_class: connectivity
-
   - platform: template
-    name: "Object Detected"
+    name: "Garage Door State"
     lambda: |-
-      return id(distance_reading) < 50.0;
+      return id(proximity_sensor).state < 10;
+    device_class: garage_door
